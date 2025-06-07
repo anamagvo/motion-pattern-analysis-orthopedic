@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A tool for analyzing knee angles from video footage"
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
+packages = [{include = "knee_analysis"}]
 
 [tool.poetry.dependencies]
 python = "^3.9"
@@ -12,6 +13,12 @@ mediapipe = "^0.10.8"
 numpy = "^1.26.3"
 matplotlib = "^3.8.2"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+knee-analyzer = "knee_analysis.knee_angle_analyzer:main"
