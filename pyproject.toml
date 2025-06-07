@@ -7,11 +7,12 @@ readme = "README.md"
 packages = [{include = "knee_analysis"}]
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = ">=3.11,<4.0"
 opencv-python = "^4.8.1.78"
 mediapipe = "^0.10.8"
 numpy = "^1.26.3"
 matplotlib = "^3.8.2"
+scipy = "^1.15.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

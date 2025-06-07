@@ -9,10 +9,11 @@ This script analyzes video footage of human movement to track and measure knee a
 - Calculation of minimum and maximum angles
 - Graphical representation of angle changes over time
 - Pose visualization on video
+- **Step duration is now calculated as the average time between local minima or maxima of either knee, providing a more accurate measure of the gait cycle.**
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.11+
 - Poetry (Python package manager)
 
 ## Installation
@@ -30,14 +31,14 @@ poetry install
 
 ## Usage
 
-1. Activate the Poetry environment:
+1. Activate the Poetry environment (optional, or use the next step directly):
 ```bash
 poetry shell
 ```
 
-2. Run the script:
+2. Run the script using Poetry:
 ```bash
-python knee_angle_analyzer.py
+poetry run knee-analyzer
 ```
 
 3. When prompted, enter the video filename (e.g., `myvideo.mp4`) from the `input_files` directory.
@@ -46,6 +47,7 @@ python knee_angle_analyzer.py
    - Display real-time knee angles on the video
    - Generate plots of angle changes over time
    - Print minimum and maximum angles for both knees
+   - **Print step duration as the average time between local minima or maxima of either knee**
 
 5. Press 'q' to stop the video analysis and view the results
 
@@ -62,7 +64,16 @@ The script provides:
 - Real-time visualization of pose detection and angles
 - Graphs showing angle changes over time for both knees
 - Minimum and maximum angle measurements for both knees
+- **Step duration as the average time between local minima or maxima of either knee**
 - Statistical analysis of the movement patterns
+
+## Dependencies
+
+- opencv-python
+- mediapipe
+- numpy
+- matplotlib
+- scipy
 
 ## Development
 
