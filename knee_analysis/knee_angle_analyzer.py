@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import List, Tuple
 import os
+from scipy.signal import argrelextrema
 
 class KneeAngleAnalyzer:
     def __init__(self):
@@ -30,8 +31,9 @@ class KneeAngleAnalyzer:
         
         if angle > 180.0:
             angle = 360 - angle
-            
-        return angle
+        
+        # Return 180 - angle to follow orthopedic convention: straight knee is 0 degrees, bent knee is the flexion angle
+        return 180 - angle
 
     def process_frame(self, frame):
         """Process a single frame and calculate knee angles."""
@@ -117,10 +119,9 @@ class KneeAngleAnalyzer:
         self.plot_results()
 
     def plot_results(self):
-        """Plot the knee angles over time."""
+        """Plot the knee angles over time and calculate step durations based on local minima/maxima."""
         plt.figure(figsize=(12, 6))
         
-        # Smooth the angle data using a moving average
         window_size = 5
         left_smoothed = np.convolve(self.left_knee_angles, np.ones(window_size)/window_size, mode='valid')
         right_smoothed = np.convolve(self.right_knee_angles, np.ones(window_size)/window_size, mode='valid')
@@ -149,15 +150,28 @@ class KneeAngleAnalyzer:
         right_min = min(self.right_knee_angles)
         right_max = max(self.right_knee_angles)
         
-        # Calculate amplitude of knee movement
         left_amplitude = left_max - left_min
         right_amplitude = right_max - right_min
-        
-        # Calculate step duration (assuming a step is a full cycle of knee movement)
-        # This is a simple approximation and may need refinement
-        left_step_duration = len(self.left_knee_angles) / 30  # Assuming 30 fps
-        right_step_duration = len(self.right_knee_angles) / 30  # Assuming 30 fps
-        
+
+        fps = 30  # Assuming 30 fps
+        # Find local minima and maxima for step duration
+        def get_step_durations(angle_array):
+            arr = np.array(angle_array)
+            # Find local minima and maxima
+            minima = argrelextrema(arr, np.less)[0]
+            maxima = argrelextrema(arr, np.greater)[0]
+            # Combine and sort
+            extrema = np.sort(np.concatenate((minima, maxima)))
+            if len(extrema) < 2:
+                return 0.0, []
+            # Calculate durations between consecutive extrema
+            durations = np.diff(extrema) / fps
+            avg_duration = np.mean(durations) if len(durations) > 0 else 0.0
+            return avg_duration, durations
+
+        left_step_duration, left_durations = get_step_durations(self.left_knee_angles)
+        right_step_duration, right_durations = get_step_durations(self.right_knee_angles)
+
         print("\nKnee Angle Statistics:")
         print(f"Left Knee - Min: {left_min:.1f}°, Max: {left_max:.1f}°, Amplitude: {left_amplitude:.1f}°, Step Duration: {left_step_duration:.2f}s")
         print(f"Right Knee - Min: {right_min:.1f}°, Max: {right_max:.1f}°, Amplitude: {right_amplitude:.1f}°, Step Duration: {right_step_duration:.2f}s")
