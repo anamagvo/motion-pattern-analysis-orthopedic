@@ -28,7 +28,7 @@ class AngleCalculator:
         cos_angle = np.clip(cos_angle, -1.0, 1.0)  # Ensure value is in valid range
         angle = np.degrees(np.arccos(cos_angle))
         
-        return angle
+        return 180.0 - angle
 
     def calculate_angle_3d(self, hip: Tuple[float, float, float], knee: Tuple[float, float, float], ankle: Tuple[float, float, float]) -> float:
         """
@@ -56,4 +56,4 @@ class AngleCalculator:
         cos_angle = np.clip(cos_angle, -1.0, 1.0)  # Ensure value is in valid range
         angle = np.degrees(np.arccos(cos_angle))
         
-        return angle 
+        return 180.0 - angle 

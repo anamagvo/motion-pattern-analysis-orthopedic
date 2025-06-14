@@ -1,7 +1,9 @@
 import cv2
 import mediapipe as mp
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
+import numpy as np
+from .angle_calculator import AngleCalculator
 
 class VideoProcessor:
     def __init__(self, target_fps: float):
@@ -57,26 +59,56 @@ class VideoProcessor:
         )
         return left_hip, left_knee, left_ankle, right_hip, right_knee, right_ankle
 
-    def process_frame(self, frame, angle_calculator) -> Tuple[cv2.Mat, float, float]:
-        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(image)
-        left_angle = 0.0
-        right_angle = 0.0
+    def process_frame(self, frame: np.ndarray, angle_calculator: AngleCalculator) -> Tuple[np.ndarray, Optional[List[Tuple[float, float]]]]:
+        """Process a single frame and detect landmarks."""
+        # Convert frame to RGB for MediaPipe
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.pose.process(frame_rgb)
+        
+        # Convert back to BGR for OpenCV
+        processed_frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        
+        landmarks = []
         if results.pose_landmarks:
+            # Extract landmarks
+            for landmark in results.pose_landmarks.landmark:
+                x = int(landmark.x * frame.shape[1])
+                y = int(landmark.y * frame.shape[0])
+                landmarks.append((x, y))
+            
+            # Draw skeleton
             self.mp_drawing.draw_landmarks(
-                frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
-            landmarks = self.get_landmarks(results)
-            if landmarks:
-                left_hip, left_knee, left_ankle, right_hip, right_knee, right_ankle = landmarks
+                processed_frame,
+                results.pose_landmarks,
+                self.mp_pose.POSE_CONNECTIONS
+            )
+            
+            # Calculate angles
+            if len(landmarks) >= 25:  # MediaPipe Pose has 33 landmarks
+                left_hip = landmarks[23]
+                left_knee = landmarks[25]
+                left_ankle = landmarks[27]
+                right_hip = landmarks[24]
+                right_knee = landmarks[26]
+                right_ankle = landmarks[28]
+                
                 left_angle = angle_calculator.calculate_angle(left_hip, left_knee, left_ankle)
                 right_angle = angle_calculator.calculate_angle(right_hip, right_knee, right_ankle)
-                cv2.putText(frame, f"Left Knee: {left_angle:.1f}°", (10, 60),
+                
+                # Create overlay on the left side
+                h, w = frame.shape[:2]
+                overlay = np.zeros((h, w, 3), dtype=np.uint8)
+                
+                # Add text to overlay
+                cv2.putText(overlay, f"Left Knee 2D: {left_angle:.1f}°", (10, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                cv2.putText(frame, f"Right Knee: {right_angle:.1f}°", (10, 100),
+                cv2.putText(overlay, f"Right Knee 2D: {right_angle:.1f}°", (10, 70),
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                self._draw_knee_lines(frame, left_hip, left_knee, left_ankle, (0, 255, 0))
-                self._draw_knee_lines(frame, right_hip, right_knee, right_ankle, (0, 255, 0))
-        return frame, left_angle, right_angle
+                
+                # Add overlay to the left side of the frame
+                processed_frame = cv2.addWeighted(processed_frame, 1, overlay, 0.7, 0)
+        
+        return processed_frame, landmarks
 
     def _draw_knee_lines(self, frame, hip, knee, ankle, color):
         height, width = frame.shape[:2]

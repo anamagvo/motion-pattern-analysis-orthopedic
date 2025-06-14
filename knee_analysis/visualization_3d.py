@@ -4,119 +4,168 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 import numpy as np
 from typing import List, Tuple
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 class SkeletonVisualizer3D:
     def __init__(self):
-        """Initialize the 3D visualization window."""
-        pygame.init()
-        display = (800, 600)
-        pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
+        """Initialize the 3D visualizer with matplotlib."""
+        self.fig = plt.figure(figsize=(20, 5))
         
-        # Set up the perspective
-        gluPerspective(45, (display[0]/display[1]), 0.1, 50.0)
-        glTranslatef(0.0, 0.0, -5)
+        # Create subplots for 2D and 3D views
+        self.ax_2d = self.fig.add_subplot(141)
+        self.ax_front = self.fig.add_subplot(142, projection='3d')
+        self.ax_side = self.fig.add_subplot(143, projection='3d')
+        self.ax_top = self.fig.add_subplot(144, projection='3d')
         
-        # Initialize rotation angles
-        self.rot_x = 0
-        self.rot_y = 0
+        # Set titles and labels
+        self.ax_2d.set_title('2D Knee Angles')
+        self.ax_2d.set_xlabel('Frame')
+        self.ax_2d.set_ylabel('Angle (degrees)')
         
-        # Set up lighting
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_LIGHTING)
-        glShadeModel(GL_SMOOTH)
-        glEnable(GL_COLOR_MATERIAL)
-        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+        self.ax_front.set_title('Front View')
+        self.ax_side.set_title('Side View')
+        self.ax_top.set_title('Top View')
         
-        # Set up light
-        glEnable(GL_LIGHT0)
-        glLightfv(GL_LIGHT0, GL_POSITION, (0, 0, 1, 0))
-        glLightfv(GL_LIGHT0, GL_AMBIENT, (0.5, 0.5, 0.5, 1))
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, (1, 1, 1, 1))
-
-    def draw_joint(self, position: Tuple[float, float, float], size: float = 0.1):
-        """Draw a joint as a sphere at the given position."""
-        glPushMatrix()
-        glTranslatef(position[0], position[1], position[2])
+        # Set initial view angles
+        self.ax_front.view_init(elev=0, azim=0)
+        self.ax_side.view_init(elev=0, azim=90)
+        self.ax_top.view_init(elev=90, azim=0)
         
-        # Create a sphere
-        quad = gluNewQuadric()
-        gluSphere(quad, size, 32, 32)
+        # Initialize data storage
+        self.frame_count = 0
+        self.left_angles_2d = []
+        self.right_angles_2d = []
+        self.left_angles_3d = []
+        self.right_angles_3d = []
         
-        glPopMatrix()
-
-    def draw_bone(self, start: Tuple[float, float, float], end: Tuple[float, float, float], width: float = 0.05):
-        """Draw a bone as a cylinder between two points."""
-        # Calculate the direction vector
-        direction = np.array(end) - np.array(start)
-        length = np.linalg.norm(direction)
+        # Show the plot
+        plt.ion()
+        plt.show()
+    
+    def update(self, left_angle_2d=None, right_angle_2d=None, left_angle_3d=None, right_angle_3d=None):
+        """Update the visualization with new angle data."""
+        self.frame_count += 1
         
-        if length == 0:
-            return
+        # Store angles
+        if left_angle_2d is not None:
+            self.left_angles_2d.append(left_angle_2d)
+        if right_angle_2d is not None:
+            self.right_angles_2d.append(right_angle_2d)
+        if left_angle_3d is not None:
+            self.left_angles_3d.append(left_angle_3d)
+        if right_angle_3d is not None:
+            self.right_angles_3d.append(right_angle_3d)
+        
+        # Clear previous plots
+        self.ax_2d.clear()
+        self.ax_front.clear()
+        self.ax_side.clear()
+        self.ax_top.clear()
+        
+        # Plot 2D angles
+        frames = range(len(self.left_angles_2d))
+        self.ax_2d.plot(frames, self.left_angles_2d, 'b-', label='Left Knee')
+        self.ax_2d.plot(frames, self.right_angles_2d, 'r-', label='Right Knee')
+        self.ax_2d.set_title('2D Knee Angles')
+        self.ax_2d.set_xlabel('Frame')
+        self.ax_2d.set_ylabel('Angle (degrees)')
+        self.ax_2d.legend()
+        
+        # Create simple 3D visualization using 2D angles
+        if self.left_angles_2d or self.right_angles_2d:
+            # Use the last angle for visualization
+            left_angle = self.left_angles_2d[-1] if self.left_angles_2d else 0
+            right_angle = self.right_angles_2d[-1] if self.right_angles_2d else 0
             
-        # Normalize the direction
-        direction = direction / length
+            # Create simple skeleton visualization
+            self._plot_simple_skeleton(self.ax_front, left_angle, right_angle, view='front')
+            self._plot_simple_skeleton(self.ax_side, left_angle, right_angle, view='side')
+            self._plot_simple_skeleton(self.ax_top, left_angle, right_angle, view='top')
         
-        # Calculate the rotation axis and angle
-        z_axis = np.array([0, 0, 1])
-        rotation_axis = np.cross(z_axis, direction)
-        rotation_angle = np.arccos(np.dot(z_axis, direction)) * 180 / np.pi
+        # Update the plot
+        plt.draw()
+        plt.pause(0.001)
+    
+    def _plot_simple_skeleton(self, ax, left_angle, right_angle, view='front'):
+        """Plot a simple skeleton visualization using 2D angles."""
+        # Create points for a simple skeleton
+        points = {
+            'hip': (0, 0, 0),
+            'left_knee': (-0.5, -0.5, 0),
+            'right_knee': (0.5, -0.5, 0),
+            'left_ankle': (-0.5, -1, 0),
+            'right_ankle': (0.5, -1, 0)
+        }
         
-        glPushMatrix()
+        # Apply angle-based transformations
+        if view == 'front':
+            # Rotate knees based on angles
+            left_knee = self._rotate_point(points['left_knee'], points['hip'], left_angle)
+            right_knee = self._rotate_point(points['right_knee'], points['hip'], right_angle)
+            points['left_knee'] = left_knee
+            points['right_knee'] = right_knee
+        elif view == 'side':
+            # Show side view with depth
+            points = {k: (v[0], v[1], v[2] + 0.5) for k, v in points.items()}
+        else:  # top view
+            # Show top view
+            points = {k: (v[0], v[2], v[1]) for k, v in points.items()}
         
-        # Move to the start position
-        glTranslatef(start[0], start[1], start[2])
+        # Plot points
+        for point in points.values():
+            ax.scatter(*point, c='r', marker='o')
         
-        # Rotate to align with the direction
-        if np.any(rotation_axis):
-            glRotatef(rotation_angle, rotation_axis[0], rotation_axis[1], rotation_axis[2])
+        # Plot connections
+        ax.plot([points['hip'][0], points['left_knee'][0]],
+                [points['hip'][1], points['left_knee'][1]],
+                [points['hip'][2], points['left_knee'][2]], 'b-')
+        ax.plot([points['hip'][0], points['right_knee'][0]],
+                [points['hip'][1], points['right_knee'][1]],
+                [points['hip'][2], points['right_knee'][2]], 'b-')
+        ax.plot([points['left_knee'][0], points['left_ankle'][0]],
+                [points['left_knee'][1], points['left_ankle'][1]],
+                [points['left_knee'][2], points['left_ankle'][2]], 'b-')
+        ax.plot([points['right_knee'][0], points['right_ankle'][0]],
+                [points['right_knee'][1], points['right_ankle'][1]],
+                [points['right_knee'][2], points['right_ankle'][2]], 'b-')
         
-        # Draw the cylinder
-        quad = gluNewQuadric()
-        gluCylinder(quad, width, width, length, 32, 1)
+        # Set view
+        if view == 'front':
+            ax.view_init(elev=0, azim=0)
+        elif view == 'side':
+            ax.view_init(elev=0, azim=90)
+        else:  # top view
+            ax.view_init(elev=90, azim=0)
         
-        glPopMatrix()
-
-    def draw_skeleton(self, landmarks_3d: List[Tuple[float, float, float]]):
-        """Draw the 3D skeleton using the provided landmarks."""
-        # Clear the screen and depth buffer
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        ax.set_title(f'{view.title()} View')
+    
+    def _rotate_point(self, point, center, angle_degrees):
+        """Rotate a point around a center by an angle in degrees."""
+        import math
+        angle_rad = math.radians(angle_degrees)
+        x, y, z = point
+        cx, cy, cz = center
         
-        # Apply rotation
-        glRotatef(self.rot_x, 1, 0, 0)
-        glRotatef(self.rot_y, 0, 1, 0)
+        # Translate point to origin
+        x -= cx
+        y -= cy
         
-        # Draw joints
-        for landmark in landmarks_3d:
-            self.draw_joint(landmark)
-            
-        # Draw bones (connections between joints)
-        # Left leg
-        self.draw_bone(landmarks_3d[0], landmarks_3d[1])  # Hip to knee
-        self.draw_bone(landmarks_3d[1], landmarks_3d[2])  # Knee to ankle
+        # Rotate point
+        new_x = x * math.cos(angle_rad) - y * math.sin(angle_rad)
+        new_y = x * math.sin(angle_rad) + y * math.cos(angle_rad)
         
-        # Right leg
-        self.draw_bone(landmarks_3d[3], landmarks_3d[4])  # Hip to knee
-        self.draw_bone(landmarks_3d[4], landmarks_3d[5])  # Knee to ankle
-        
-        pygame.display.flip()
-        
-    def handle_input(self):
-        """Handle keyboard and mouse input for camera control."""
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                return False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_LEFT:
-                    self.rot_y += 5
-                elif event.key == pygame.K_RIGHT:
-                    self.rot_y -= 5
-                elif event.key == pygame.K_UP:
-                    self.rot_x += 5
-                elif event.key == pygame.K_DOWN:
-                    self.rot_x -= 5
-        return True
-        
+        # Translate back
+        return (new_x + cx, new_y + cy, z)
+    
     def cleanup(self):
         """Clean up resources."""
-        pygame.quit() 
+        plt.close(self.fig)
+        
+    def handle_input(self):
+        """Handle keyboard input for view control."""
+        for event in plt.get_current_fig_manager().canvas.events:
+            if event.type == 'close':
+                plt.close('all')
+                return False
+        return True 

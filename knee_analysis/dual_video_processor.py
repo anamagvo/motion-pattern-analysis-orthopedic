@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Tuple, Optional, List
 import mediapipe as mp
 from scipy.signal import find_peaks
+import matplotlib.pyplot as plt
 
 from .angle_calculator import AngleCalculator
 from .pose_3d_estimator import Pose3DEstimator
 from .visualization_3d import SkeletonVisualizer3D
+from .skeleton_fitter import SkeletonFitter
 
 class DualVideoProcessor:
     def __init__(self, video_path1: str, video_path2: Optional[str] = None, framerate: float = 30.0):
@@ -24,6 +26,7 @@ class DualVideoProcessor:
                 self.second_cap = None
         self.pose_3d_estimator = None
         self.visualizer_3d = None
+        self.skeleton_fitter = None
         self.landmarks1 = []
         self.landmarks2 = []
         self.landmarks_3d = []
@@ -78,40 +81,84 @@ class DualVideoProcessor:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         return cv2.VideoWriter(str(output_path), fourcc, self.target_fps, (width * 2, height))
 
-    def process_dual_frame(
-        self,
-        frame1: np.ndarray,
-        frame2: np.ndarray,
-        angle_calculator: AngleCalculator
-    ) -> Tuple[np.ndarray, float, float]:
-        """Process frames from both videos and combine them."""
-        # Process first frame
+    def set_skeleton_fitter(self, trc_file_path: str):
+        """Initialize the skeleton fitter with a reference TRC file."""
+        self.skeleton_fitter = SkeletonFitter(trc_file_path)
+
+    def process_dual_frame(self, frame1, frame2, angle_calculator):
+        """Process frames from both cameras and calculate angles."""
+        # Process frames
         processed_frame1, landmarks1 = self._process_single_frame(frame1, "Left Video")
-        
-        # Process second frame
         processed_frame2, landmarks2 = self._process_single_frame(frame2, "Right Video")
         
         # Combine frames horizontally
-        combined_frame = np.hstack((processed_frame1, processed_frame2))
+        processed_frame = np.hstack((processed_frame1, processed_frame2))
         
-        # If we have landmarks from both cameras, estimate 3D pose
+        # Calculate 2D angles from landmarks of both cameras if available
+        left_angle_2d = None
+        right_angle_2d = None
+        if landmarks1 and landmarks2:
+            # Use landmarks from camera 1 for left side and camera 2 for right side
+            left_angle_2d = angle_calculator.calculate_angle(
+                landmarks1['left_hip'], landmarks1['left_knee'], landmarks1['left_ankle'])
+            right_angle_2d = angle_calculator.calculate_angle(
+                landmarks2['right_hip'], landmarks2['right_knee'], landmarks2['right_ankle'])
+        
+        # Estimate 3D pose using anatomical constraints
+        landmarks_3d = None
         if landmarks1 and landmarks2 and self.pose_3d_estimator:
-            landmarks_3d = self.pose_3d_estimator.estimate_3d_pose(landmarks1, landmarks2)
-            
-            # Update 3D visualization
-            self.visualizer_3d.draw_skeleton(landmarks_3d)
-            self.visualizer_3d.handle_input()
-            
-            # Calculate angles in 3D space
-            left_angle = angle_calculator.calculate_angle_3d(
-                landmarks_3d[0], landmarks_3d[1], landmarks_3d[2])
-            right_angle = angle_calculator.calculate_angle_3d(
-                landmarks_3d[3], landmarks_3d[4], landmarks_3d[5])
-        else:
-            left_angle = 0.0
-            right_angle = 0.0
+            try:
+                landmarks_3d = self.pose_3d_estimator.estimate_3d_pose_anatomical(landmarks1, landmarks2)
+            except Exception as e:
+                print(f"Warning: 3D pose estimation failed: {e}")
+                landmarks_3d = None
         
-        return combined_frame, left_angle, right_angle
+        # Calculate angles in 3D space if we have landmarks
+        left_angle_3d = None
+        right_angle_3d = None
+        if landmarks_3d:
+            try:
+                left_angle_3d = angle_calculator.calculate_angle_3d(
+                    landmarks_3d['left_hip'], landmarks_3d['left_knee'], landmarks_3d['left_ankle'])
+                right_angle_3d = angle_calculator.calculate_angle_3d(
+                    landmarks_3d['right_hip'], landmarks_3d['right_knee'], landmarks_3d['right_ankle'])
+            except Exception as e:
+                print(f"Warning: 3D angle calculation failed: {e}")
+        
+        # Create overlay on the left side of the frame
+        overlay = np.zeros_like(processed_frame)
+        
+        # Add text to overlay
+        y_pos = 30
+        if left_angle_2d is not None:
+            cv2.putText(overlay, f"2D - Left: {left_angle_2d:.1f}°", (10, y_pos),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            y_pos += 40
+        if right_angle_2d is not None:
+            cv2.putText(overlay, f"2D - Right: {right_angle_2d:.1f}°", (10, y_pos),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            y_pos += 40
+        if left_angle_3d is not None:
+            cv2.putText(overlay, f"3D - Left: {left_angle_3d:.1f}°", (10, y_pos),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            y_pos += 40
+        if right_angle_3d is not None:
+            cv2.putText(overlay, f"3D - Right: {right_angle_3d:.1f}°", (10, y_pos),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
+        # Blend overlay with processed frame
+        processed_frame = cv2.addWeighted(processed_frame, 1, overlay, 0.7, 0)
+        
+        # Update 3D visualization if available
+        if self.visualizer_3d and landmarks_3d:
+            self.visualizer_3d.update(
+                left_angle_2d=left_angle_2d,
+                right_angle_2d=right_angle_2d,
+                left_angle_3d=left_angle_3d,
+                right_angle_3d=right_angle_3d
+            )
+        
+        return processed_frame, left_angle_2d, right_angle_2d
 
     def _process_single_frame(
         self,
@@ -146,31 +193,60 @@ class DualVideoProcessor:
     def _get_landmarks(self, results, mp_pose):
         if not results.pose_landmarks:
             return None
-        left_hip = (
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP].x,
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP].y
-        )
-        left_knee = (
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_KNEE].x,
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_KNEE].y
-        )
-        left_ankle = (
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_ANKLE].x,
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_ANKLE].y
-        )
-        right_hip = (
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_HIP].x,
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_HIP].y
-        )
-        right_knee = (
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_KNEE].x,
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_KNEE].y
-        )
-        right_ankle = (
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_ANKLE].x,
-            results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_ANKLE].y
-        )
-        return [left_hip, left_knee, left_ankle, right_hip, right_knee, right_ankle]
+        return {
+            'left_hip': (
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP].x,
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP].y
+            ),
+            'left_knee': (
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_KNEE].x,
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_KNEE].y
+            ),
+            'left_ankle': (
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_ANKLE].x,
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_ANKLE].y
+            ),
+            'right_hip': (
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_HIP].x,
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_HIP].y
+            ),
+            'right_knee': (
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_KNEE].x,
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_KNEE].y
+            ),
+            'right_ankle': (
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_ANKLE].x,
+                results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_ANKLE].y
+            )
+        }
+
+    def _plot_3d_skeleton(self, ax, landmarks_3d, title, view='front'):
+        """Plot 3D skeleton in the specified view."""
+        # Clear previous plot
+        ax.clear()
+        
+        # Set view based on parameter
+        if view == 'front':
+            ax.view_init(elev=0, azim=0)
+        elif view == 'side':
+            ax.view_init(elev=0, azim=90)
+        else:  # top view
+            ax.view_init(elev=90, azim=0)
+        
+        # Plot joints
+        for landmark in landmarks_3d:
+            ax.scatter(landmark[0], landmark[1], landmark[2], c='r', marker='o')
+        
+        # Plot connections
+        for i in range(len(landmarks_3d)-1):
+            ax.plot([landmarks_3d[i][0], landmarks_3d[i+1][0]],
+                   [landmarks_3d[i][1], landmarks_3d[i+1][1]],
+                   [landmarks_3d[i][2], landmarks_3d[i+1][2]], 'b-')
+        
+        ax.set_title(title)
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
 
     def analyze_dual_video(self, video_path1: str, video_path2: str, angle_calculator):
         """Process two videos simultaneously and analyze knee angles."""
@@ -232,7 +308,7 @@ class DualVideoProcessor:
                 break
             
             # Process frames
-            processed_frame, left_angle, right_angle = self.process_dual_frame(
+            processed_frame, left_angle_2d, right_angle_2d = self.process_dual_frame(
                 frame1, frame2, angle_calculator)
             
             # Write the processed frame

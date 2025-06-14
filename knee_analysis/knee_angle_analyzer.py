@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 import numpy as np
+import matplotlib.pyplot as plt
 
 from .video_processor import VideoProcessor
 from .dual_video_processor import DualVideoProcessor
@@ -22,8 +23,15 @@ class KneeAngleAnalyzer:
         # Initialize lists to store angle data
         self.left_knee_angles: List[float] = []
         self.right_knee_angles: List[float] = []
+        self.left_knee_angles_3d: List[float] = []
+        self.right_knee_angles_3d: List[float] = []
+        self.left_knee_angles_2d_proj: List[float] = []
+        self.right_knee_angles_2d_proj: List[float] = []
+        
+        # Store last valid 3D skeleton
+        self.last_valid_skeleton = None
 
-    def analyze_video(self, video_path: str, second_video_path: Optional[str] = None):
+    def analyze_video(self, video_path: str, second_video_path: Optional[str] = None, trc_file_path: Optional[str] = None):
         """Process the video(s) and analyze knee angles."""
         if second_video_path:
             self.dual_video_processor = DualVideoProcessor(video_path, second_video_path, self.target_fps)
@@ -41,6 +49,11 @@ class KneeAngleAnalyzer:
                 rvec, tvec
             )
             self.dual_video_processor.set_pose_3d_estimator(pose_3d_estimator)
+            
+            # Initialize skeleton fitter if TRC file is provided
+            if trc_file_path:
+                self.dual_video_processor.set_skeleton_fitter(trc_file_path)
+            
             self._analyze_dual_video(video_path, second_video_path)
         else:
             self._analyze_single_video(video_path)
@@ -53,40 +66,151 @@ class KneeAngleAnalyzer:
         width, height, _ = self.video_processor.get_video_properties(cap)
         out = self.video_processor.create_video_writer(video_path, width, height)
         
+        # Initialize 3D pose estimator with default camera parameters
+        camera_matrix = np.array([[1000, 0, 320], [0, 1000, 240], [0, 0, 1]], dtype=np.float32)
+        dist_coeffs = np.zeros(5, dtype=np.float32)
+        pose_3d_estimator = Pose3DEstimator(camera_matrix, camera_matrix, dist_coeffs, dist_coeffs, np.zeros(3), np.zeros(3))
+        
+        # Initialize skeleton fitter if TRC file is provided
+        skeleton_fitter = None
+        if hasattr(self, 'trc_file_path') and self.trc_file_path:
+            skeleton_fitter = SkeletonFitter(self.trc_file_path)
+        
+        # Create figure for angle plots
+        plt.figure(figsize=(20, 5))
+        
+        # 2D angle plot
+        ax_2d = plt.subplot(141)
+        ax_2d.set_title('2D Knee Angles')
+        ax_2d.set_xlabel('Frame')
+        ax_2d.set_ylabel('Angle (degrees)')
+        ax_2d.grid(True)
+        
+        # 3D views
+        ax_front = plt.subplot(142, projection='3d')
+        ax_side = plt.subplot(143, projection='3d')
+        ax_top = plt.subplot(144, projection='3d')
+        
+        # Set initial views
+        ax_front.view_init(elev=0, azim=0)  # Front view
+        ax_side.view_init(elev=0, azim=90)  # Side view
+        ax_top.view_init(elev=90, azim=0)   # Top view
+        
+        # Set titles
+        ax_front.set_title('Front View')
+        ax_side.set_title('Side View')
+        ax_top.set_title('Top View')
+        
+        frame_count = 0
+        
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
                 
             # Process frame
-            processed_frame, left_angle, right_angle = self.video_processor.process_frame(
-                frame, self.angle_calculator)
+            processed_frame, landmarks = self.video_processor.process_frame(frame, self.angle_calculator)
             
-            # Store angles
-            self.left_knee_angles.append(left_angle)
-            self.right_knee_angles.append(right_angle)
+            # Calculate 2D angles from landmarks
+            if landmarks:
+                left_angle = self.angle_calculator.calculate_angle(
+                    landmarks['left_hip'], landmarks['left_knee'], landmarks['left_ankle'])
+                right_angle = self.angle_calculator.calculate_angle(
+                    landmarks['right_hip'], landmarks['right_knee'], landmarks['right_ankle'])
+                self.left_knee_angles.append(left_angle)
+                self.right_knee_angles.append(right_angle)
             
-            # Write the processed frame to output video
+            # If landmarks are detected and skeleton fitter is available, do 3D fitting
+            if landmarks and skeleton_fitter:
+                # Estimate 3D pose using default camera model
+                landmarks_3d = pose_3d_estimator.estimate_3d_pose(landmarks, landmarks)
+                
+                # Fit skeleton using inverse kinematics
+                fitted_landmarks = skeleton_fitter.optimize_skeleton(landmarks_3d)
+                self.last_valid_skeleton = fitted_landmarks  # Store the last valid skeleton
+                
+                # Calculate angles from fitted 3D skeleton
+                left_angle_3d = self.angle_calculator.calculate_angle_3d(
+                    fitted_landmarks['hip'], fitted_landmarks['knee'], fitted_landmarks['ankle'])
+                right_angle_3d = self.angle_calculator.calculate_angle_3d(
+                    fitted_landmarks['hip'], fitted_landmarks['knee'], fitted_landmarks['ankle'])
+                
+                self.left_knee_angles_3d.append(left_angle_3d)
+                self.right_knee_angles_3d.append(right_angle_3d)
+            
+            # Update plots
+            frame_count += 1
+            frames = range(frame_count)
+            
+            # Update 2D angle plot
+            ax_2d.clear()
+            if self.left_knee_angles:
+                ax_2d.plot(frames, self.left_knee_angles, 'g-', label='Left Knee 2D')
+            if self.right_knee_angles:
+                ax_2d.plot(frames, self.right_knee_angles, 'b-', label='Right Knee 2D')
+            if self.left_knee_angles_3d:
+                ax_2d.plot(frames, self.left_knee_angles_3d, 'g--', label='Left Knee 3D')
+            if self.right_knee_angles_3d:
+                ax_2d.plot(frames, self.right_knee_angles_3d, 'b--', label='Right Knee 3D')
+            ax_2d.set_title('Knee Angles')
+            ax_2d.set_xlabel('Frame')
+            ax_2d.set_ylabel('Angle (degrees)')
+            ax_2d.grid(True)
+            ax_2d.legend()
+            
+            # Update 3D views if we have a valid skeleton
+            if self.last_valid_skeleton:
+                for ax in [ax_front, ax_side, ax_top]:
+                    ax.clear()
+                    # Plot joints
+                    for landmark in self.last_valid_skeleton.values():
+                        ax.scatter(landmark[0], landmark[1], landmark[2], c='r', marker='o', s=100)
+                    
+                    # Plot connections
+                    ax.plot([self.last_valid_skeleton['hip'][0], self.last_valid_skeleton['knee'][0]],
+                           [self.last_valid_skeleton['hip'][1], self.last_valid_skeleton['knee'][1]],
+                           [self.last_valid_skeleton['hip'][2], self.last_valid_skeleton['knee'][2]], 'b-', linewidth=2)
+                    ax.plot([self.last_valid_skeleton['knee'][0], self.last_valid_skeleton['ankle'][0]],
+                           [self.last_valid_skeleton['knee'][1], self.last_valid_skeleton['ankle'][1]],
+                           [self.last_valid_skeleton['knee'][2], self.last_valid_skeleton['ankle'][2]], 'b-', linewidth=2)
+                    
+                    # Set labels
+                    ax.set_xlabel('X')
+                    ax.set_ylabel('Y')
+                    ax.set_zlabel('Z')
+                    ax.set_box_aspect([1,1,1])
+            
+            plt.draw()
+            plt.pause(0.001)
+            
+            # Write frame to output video
             out.write(processed_frame)
             
-            # Display the frame
+            # Display frame
             cv2.imshow('Knee Angle Analysis', processed_frame)
-            
-            # Break the loop if 'q' is pressed
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-                
+        
+        # Clean up
         cap.release()
         out.release()
         cv2.destroyAllWindows()
         
-        # Plot results and get statistics
-        self.plotter.plot_knee_angles(
-            self.video_processor.video_name,
-            self.left_knee_angles,
-            self.right_knee_angles,
-            self.target_fps
-        )
+        # Save the final plot
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        plt.savefig(f'output_files/{video_name}_knee_angle_analysis.png', dpi=300, bbox_inches='tight')
+        plt.close('all')
+        
+        # Plot results and get statistics, only if there is data
+        if self.left_knee_angles_3d or self.left_knee_angles_2d_proj:
+            self.plotter.plot_knee_angles_compare(
+                self.video_processor.video_name,
+                self.left_knee_angles_3d,
+                self.left_knee_angles_2d_proj,
+                self.target_fps
+            )
+        else:
+            print("No knee angle data was collected. Please check your video and ensure the person is fully visible.")
 
     def _analyze_dual_video(self, video_path1: str, video_path2: str):
         """Process two videos simultaneously and analyze knee angles."""
@@ -156,130 +280,49 @@ class KneeAngleAnalyzer:
         )
 
 def main():
-    # Print supported video formats
-    print("Supported video formats: .mp4, .avi, .mov, .mkv, .wmv, .flv, .webm")
-    print("Place your video files in a folder within the 'input_files' directory.")
+    # Get user input for framerate
+    target_fps = float(input("Enter desired framerate (e.g., 30.0): "))
     
-    # Get desired framerate
-    while True:
-        try:
-            fps_input = input("\nEnter desired framerate (e.g., 30.0): ")
-            fps = float(fps_input)
-            if fps <= 0:
-                print("Framerate must be positive.")
-                continue
-            break
-        except ValueError:
-            print("Please enter a valid number.")
-            continue
+    # Initialize the analyzer with the target framerate
+    analyzer = KneeAngleAnalyzer(target_fps=target_fps)
     
-    # Check if input_files directory exists
-    input_dir = "input_files"
-    if not os.path.exists(input_dir):
-        print(f"Error: input_files directory not found")
-        print("Please create the directory and place your video folder(s) there.")
-        return
-    
-    # List available folders
-    folders = [f for f in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, f))]
-    
-    if not folders:
-        print("No folders found in the input_files directory.")
-        return
-    
+    # Get user input for video folder
     print("\nAvailable folders:")
+    folders = [f for f in os.listdir("input_files") if os.path.isdir(os.path.join("input_files", f))]
     for i, folder in enumerate(folders, 1):
         print(f"{i}. {folder}")
     
-    # Get folder selection from user
-    while True:
-        try:
-            selection = input("\nEnter the number of the folder containing your videos: ")
-            selection = int(selection)
-            if selection < 1 or selection > len(folders):
-                print(f"Please enter a number between 1 and {len(folders)}.")
-                continue
-            selected_folder = folders[selection - 1]
-            folder_path = os.path.join(input_dir, selected_folder)
-            break
-        except ValueError:
-            print("Please enter a valid number.")
-            continue
+    folder_idx = int(input("\nEnter the number of the folder containing your videos: ")) - 1
+    folder_path = os.path.join("input_files", folders[folder_idx])
     
-    # List videos in selected folder
-    video_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'))]
-    
-    if not video_files:
-        print(f"No video files found in {selected_folder}.")
-        return
-        
-    
-    print(f"\nVideos found in {selected_folder}:")
-    for i, video in enumerate(video_files, 1):
+    # Get user input for video files
+    videos = [f for f in os.listdir(folder_path) if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'))]
+    print(f"\nVideos found in {folders[folder_idx]}:")
+    for i, video in enumerate(videos, 1):
         print(f"{i}. {video}")
-
-    analyzer = KneeAngleAnalyzer(target_fps=fps)
-
-    if len(video_files) == 1:
-        # Only one video available, analyze it
-        video_path = os.path.join(folder_path, video_files[0])
-        analyzer.analyze_video(video_path)
-    else:
-        # More than one video available, prompt for selection
-        print("\nYou can analyze two videos. You have to make sure they are of the same subject and activity and synchronized in time.")
-        while True:
-            mode = input(f"\nDo you want to analyze a single video or two videos? (Enter '1' for single, '2' for dual): ")
-            if mode == '1':
-                while True:
-                    try:
-                        selection1 = input("\nEnter the number of the video to analyze: ")
-                        selection1 = int(selection1)
-                        if selection1 < 1 or selection1 > len(video_files):
-                            print(f"Please enter a number between 1 and {len(video_files)}.")
-                            continue
-                        break
-                    except ValueError:
-                        print("Please enter a valid number.")
-                        continue
-                video_path = os.path.join(folder_path, video_files[selection1 - 1])
-                analyzer.analyze_video(video_path)
-                break
-            elif mode == '2':
-                while True:
-                    try:
-                        selection1 = input("\nEnter the number of the first video to analyze: ")
-                        selection1 = int(selection1)
-                        if selection1 < 1 or selection1 > len(video_files):
-                            print(f"Please enter a number between 1 and {len(video_files)}.")
-                            continue
-                        break
-                    except ValueError:
-                        print("Please enter a valid number.")
-                        continue
-                while True:
-                    try:
-                        selection2 = input("Enter the number of the second video to analyze: ")
-                        selection2 = int(selection2)
-                        if selection2 < 1 or selection2 > len(video_files):
-                            print(f"Please enter a number between 1 and {len(video_files)}.")
-                            continue
-                        if selection2 == selection1:
-                            print("Please select a different video for the second selection.")
-                            continue
-                        break
-                    except ValueError:
-                        print("Please enter a valid number.")
-                        continue
-                video_path1 = os.path.join(folder_path, video_files[selection1 - 1])
-                video_path2 = os.path.join(folder_path, video_files[selection2 - 1])
-                analyzer.analyze_video(video_path1, video_path2)
-                break
-            else:
-                print("Invalid selection. Please enter '1' for single video or '2' for dual video.")
-                continue
     
-    # Analyze the videos
-    analyzer.analyze_video(video_path1, video_path2)
+    video_idx1 = int(input("\nEnter the number of the first video to analyze: ")) - 1
+    video_path1 = os.path.join(folder_path, videos[video_idx1])
+    
+    # Ask if user wants to analyze a second video
+    use_second_video = input("\nDo you want to analyze a second video? (yes/no): ").lower() == 'yes'
+    video_path2 = None
+    if use_second_video:
+        video_idx2 = int(input("Enter the number of the second video to analyze: ")) - 1
+        video_path2 = os.path.join(folder_path, videos[video_idx2])
+    
+    # Get user input for TRC file
+    trc_file_path = input("\nEnter the path to the TRC file (or press Enter to use default): ").strip()
+    if not trc_file_path:
+        # Use default TRC file
+        trc_file_path = "input_files/default_skeleton.trc"
+        print(f"Using default TRC file: {trc_file_path}")
+    
+    # Analyze the video(s)
+    if video_path2:
+        analyzer.analyze_video(video_path1, video_path2, trc_file_path)
+    else:
+        analyzer.analyze_video(video_path1, None, trc_file_path)
 
 if __name__ == "__main__":
     main() 
